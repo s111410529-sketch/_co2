@@ -42,5 +42,28 @@ CHIP ALU {
         ng; // 1 if (out < 0),  0 otherwise
 
     PARTS:
-   // Put you code here:
+    // x pre-processing: zero the x input?
+    Mux16(a=x, b=false, sel=zx, out=xz);
+    // not the x input?
+    Not16(in=xz, out=nxz);
+    Mux16(a=xz, b=nxz, sel=nx, out=xn);
+    // y pre-processing: zero the y input?
+    Mux16(a=y, b=false, sel=zy, out=yz);
+    // not the y input?
+    Not16(in=yz, out=nyz);
+    Mux16(a=yz, b=nyz, sel=ny, out=yn);
+    // compute out = x & y (if f == 0) or x + y (if f == 1)
+    And16(a=xn, b=yn, out=xay);
+    Add16(a=xn, b=yn, out=xpy);
+    Mux16(a=xay, b=xpy, sel=f, out=xyf);
+    // negate the out output?
+    Not16(in=xyf, out=nxyf);
+    Mux16(a=xyf, b=nxyf, sel=no, out=out, out[0]=f0, out[1]=f1, out[2]=f2, out[3]=f3, out[4]=f4, out[5]=f5, out[6]=f6, out[7]=f7, out[8]=f8, out[9]=f9, out[10]=f10, out[11]=f11, out[12]=f12, out[13]=f13, out[14]=f14, out[15]=f15);
+    // zr = 1 if (out == 0)
+    Or8Way(in[0]=f0, in[1]=f1, in[2]=f2, in[3]=f3, in[4]=f4, in[5]=f5, in[6]=f6, in[7]=f7, out=orl);
+    Or8Way(in[0]=f8, in[1]=f9, in[2]=f10, in[3]=f11, in[4]=f12, in[5]=f13, in[6]=f14, in[7]=f15, out=orh);
+    Or(a=orl, b=orh, out=orall);
+    Not(in=orall, out=zr);
+    // ng = 1 if (out < 0)
+    And(a=f15, b=true, out=ng);
 }

@@ -1,0 +1,9 @@
+// ALU 前端第二輸入 Mux16：由 a-bit (instruction[12]) 決定選擇 A 暫存器或 inM
+    Mux16(a=aRegOut, b=inM, sel=instruction[12], out=aluBInput);
+
+    // ALU 運算元件實體（由 c1~c6 即 instruction[11..6] 控制運算模式）
+    ALU(x=dRegOut, y=aluBInput,
+        zx=instruction[11], nx=instruction[10],
+        zy=instruction[9],  ny=instruction[8],
+        f=instruction[7],   no=instruction[6],
+        out=aluOut, out=outM, zr=isZero, ng=isNeg);

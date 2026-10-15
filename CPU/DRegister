@@ -1,0 +1,5 @@
+// D 暫存器 Load 控制邏輯：loadD = C指令 ∧ d2目的位元
+    And(a=instruction[15], b=instruction[4], out=loadD);
+    
+    // D 暫存器實體
+    DRegister(in=aluOut, load=loadD, out=dRegOut);

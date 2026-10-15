@@ -1,0 +1,12 @@
+// 判斷是否為 A 指令 (instruction[15] == 0)
+    Not(in=instruction[15], out=isAInstr);
+    
+    // 前端 Mux16：決定 A 暫存器的輸入是指令本身還是 ALU 運算結果
+    Mux16(a=instruction, b=aluOut, sel=instruction[15], out=aRegIn);
+
+    // A 暫存器 Load 控制邏輯：loadA = A指令 ∨ (C指令 ∧ d1目的位元)
+    And(a=instruction[15], b=instruction[5], out=isCAndDestA);
+    Or(a=isAInstr, b=isCAndDestA, out=loadA);
+    
+    // A 暫存器實體
+    ARegister(in=aRegIn, load=loadA, out=aRegOut, out[0..14]=addressM);

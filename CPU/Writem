@@ -1,0 +1,2 @@
+// 記憶體寫入控制邏輯：writeM = C指令 ∧ d3目的位元
+    And(a=instruction[15], b=instruction[3], out=writeM);

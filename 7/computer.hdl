@@ -1,0 +1,9 @@
+
+
+CHIP Computer {
+
+    IN reset;
+
+    PARTS:
+    // Put your code here:
+}

@@ -5,5 +5,17 @@ CHIP Computer {
     IN reset;
 
     PARTS:
-    // Put your code here:
+    // 1. ROM32K：程式記憶體
+    // 用 CPU 輸出的 pc (Program Counter) 讀取下一條要執行的指令 (instruction)
+    ROM32K(address=pc, out=instruction);
+
+    // 2. CPU：中央處理器
+    // 輸入：ROM 的指令、RAM 讀出來的資料 (inM)、以及外部的 reset 訊號
+    // 輸出：寫入 RAM 的資料 (outM)、是否寫入 (writeM)、要寫入或讀取的 RAM 位址 (addressM)、以及下一條指令位址 (pc)
+    CPU(inM=memOut, instruction=instruction, reset=reset, 
+        outM=outM, writeM=writeM, addressM=addressM, pc=pc);
+
+    // 3. Memory：數據記憶體（包含 RAM、螢幕 Screen 與鍵盤 Keyboard）
+    // 依據 CPU 提供的位址、資料與寫入訊號進行存取
+    Memory(in=outM, load=writeM, address=addressM, out=memOut);
 }

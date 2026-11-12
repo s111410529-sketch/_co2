@@ -1,0 +1,247 @@
+import sys
+
+
+class Code:
+    """負責將組合語言的助記符（Mnemonic）轉換為二進位機器碼"""
+
+    # 計算運算子對應的 comp 二進位碼 (a=0 與 a=1)
+    comp_table = {
+        # a = 0
+        "0": "0101010",
+        "1": "0111111",
+        "-1": "0111010",
+        "D": "0001100",
+        "A": "0110000",
+        "!D": "0001101",
+        "!A": "0110001",
+        "-D": "0001111",
+        "-A": "0110011",
+        "D+1": "0011111",
+        "A+1": "0110111",
+        "D-1": "0001110",
+        "A-1": "0110010",
+        "D+A": "0000010",
+        "D-A": "0010011",
+        "A-D": "0000111",
+        "D&A": "0000000",
+        "D|A": "0010101",
+        # a = 1
+        "M": "1110000",
+        "!M": "1110001",
+        "-M": "1110011",
+        "M+1": "1110111",
+        "M-1": "1110010",
+        "D+M": "1000010",
+        "D-M": "1010011",
+        "M-D": "1000111",
+        "D&M": "1000000",
+        "D|M": "1010101",
+    }
+
+    # 跳躍指令對應的 jump 二進位碼
+    jump_table = {
+        "null": "000",
+        "JGT": "001",
+        "JEQ": "010",
+        "JGE": "011",
+        "JLT": "100",
+        "JNE": "101",
+        "JLE": "110",
+        "JMP": "111",
+    }
+
+    # 目的暫存器對應的 dest 二進位碼
+    dest_table = {
+        "null": "000",
+        "M": "001",
+        "D": "010",
+        "MD": "011",
+        "A": "100",
+        "AM": "101",
+        "AD": "110",
+        "AMD": "111",
+    }
+
+    @staticmethod
+    def dest(mnemonic):
+        return Code.dest_table.get(mnemonic, "000")
+
+    @staticmethod
+    def comp(mnemonic):
+        return Code.comp_table.get(mnemonic, "0000000")
+
+    @staticmethod
+    def jump(mnemonic):
+        return Code.jump_table.get(mnemonic, "000")
+
+
+class Parser:
+    """負責讀取檔案、去除空白與註解、解析指令類型"""
+
+    def __init__(self, filename):
+        with open(filename, "r", encoding="utf-8") as f:
+            self.lines = f.readlines()
+        self.current_line_idx = 0
+        self.current_instruction = ""
+        self._clean_lines()
+
+    def _clean_lines(self):
+        cleaned = []
+        for line in self.lines:
+            # 去除內聯註解與前後空白
+            line = line.split("//")[0].strip()
+            if line:
+                cleaned.append(line)
+        self.lines = cleaned
+
+    def has_more_lines(self):
+        return self.current_line_idx < len(self.lines)
+
+    def advance(self):
+        if self.has_more_lines():
+            self.current_instruction = self.lines[self.current_line_idx]
+            self.current_line_idx += 1
+
+    def instruction_type(self):
+        if self.current_instruction.startswith("@"):
+            return "A_INSTRUCTION"
+        elif self.current_instruction.startswith("("):
+            return "L_INSTRUCTION"
+        else:
+            return "C_INSTRUCTION"
+
+    def symbol(self):
+        """針對 A_INSTRUCTION 或 L_INSTRUCTION 回傳符號或常數值"""
+        inst = self.current_instruction
+        if inst.startswith("@"):
+            return inst[1:]
+        elif inst.startswith("("):
+            return inst[1:-1]
+        return ""
+
+    def dest(self):
+        if "=" in self.current_instruction:
+            return self.current_instruction.split("=")[0]
+        return "null"
+
+    def comp(self):
+        inst = self.current_instruction
+        if "=" in inst:
+            inst = inst.split("=")[1]
+        if ";" in inst:
+            inst = inst.split(";")[0]
+        return inst
+
+    def jump(self):
+        if ";" in self.current_instruction:
+            return self.current_instruction.split(";")[1]
+        return "null"
+
+
+class SymbolTable:
+    """管理預定義符號與自訂變數/標籤的符號表"""
+
+    def __init__(self):
+        self.table = {
+            "SP": 0,
+            "LCL": 1,
+            "ARG": 2,
+            "THIS": 3,
+            "THAT": 4,
+            "R0": 0,
+            "R1": 1,
+            "R2": 2,
+            "R3": 3,
+            "R4": 4,
+            "R5": 5,
+            "R6": 6,
+            "R7": 7,
+            "R8": 8,
+            "R9": 9,
+            "R10": 10,
+            "R11": 11,
+            "R12": 12,
+            "R13": 13,
+            "R14": 14,
+            "R15": 15,
+            "SCREEN": 16384,
+            "KBD": 24576,
+        }
+
+    def add_entry(self, symbol, address):
+        self.table[symbol] = address
+
+    def contains(self, symbol):
+        return symbol in self.table
+
+    def get_address(self, symbol):
+        return self.table.get(symbol)
+
+
+def assemble(input_file):
+    parser = Parser(input_file)
+    symbol_table = SymbolTable()
+
+    # 第一階段：掃描所有標籤（L-instruction），建立符號表
+    code_line_count = 0
+    while parser.has_more_lines():
+        parser.advance()
+        inst_type = parser.instruction_type()
+        if inst_type == "L_INSTRUCTION":
+            symbol = parser.symbol()
+            if not symbol_table.contains(symbol):
+                symbol_table.add_entry(symbol, code_line_count)
+        else:
+            code_line_count += 1
+
+    # 重置 Parser 準備進行第二階段
+    parser = Parser(input_file)
+    next_variable_address = 16
+    output_lines = []
+
+    # 第二階段：翻譯所有指令
+    while parser.has_more_lines():
+        parser.advance()
+        inst_type = parser.instruction_type()
+
+        if inst_type == "A_INSTRUCTION":
+            symbol = parser.symbol()
+            if symbol.isdigit():
+                address = int(symbol)
+            else:
+                if not symbol_table.contains(symbol):
+                    symbol_table.add_entry(symbol, next_variable_address)
+                    next_variable_address += 1
+                address = symbol_table.get_address(symbol)
+            # 轉換為 15 位元的二進位字串並加上開頭的 '0'
+            binary = format(address, "016b")
+            output_lines.append(binary)
+
+        elif inst_type == "C_INSTRUCTION":
+            comp_mnemonic = parser.comp()
+            dest_mnemonic = parser.dest()
+            jump_mnemonic = parser.jump()
+
+            c_code = Code.comp(comp_mnemonic)
+            d_code = Code.dest(dest_mnemonic)
+            j_code = Code.jump(jump_mnemonic)
+
+            # C 指令格式：111 + a cccccc + ddd + jjj
+            binary = "111" + c_code + d_code + j_code
+            output_lines.append(binary)
+
+        # L_INSTRUCTION 在第二階段中略過不輸出
+
+    # 輸出成 .hack 檔案
+    output_file = input_file.replace(".asm", ".hack")
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(output_lines) + "\n")
+
+    print(f"組譯完成！輸出檔案至：{output_file}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("使用方式: python assembler.py <filename.asm>")
+    else:
+        assemble(sys.argv[1])

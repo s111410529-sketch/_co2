@@ -1,0 +1,547 @@
+import os
+import re
+import sys
+
+# ==========================================
+# 1. JackTokenizer: 詞法分析器
+# ==========================================
+class JackTokenizer:
+    KEYWORDS = {
+        'class', 'constructor', 'function', 'method', 'field', 'static',
+        'var', 'int', 'char', 'boolean', 'void', 'true', 'false', 'null',
+        'this', 'let', 'do', 'if', 'else', 'while', 'return'
+    }
+    SYMBOLS = {
+        '{', '}', '(', ')', '[', ']', '.', ',', ';', '+', '-', '*', '/',
+        '&', '|', '<', '>', '=', '~'
+    }
+
+    def __init__(self, input_file):
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 移除多行註解 /* ... */ 與單行註解 // ...
+        content = re.sub(r'/\*[\s\S]*?\*/', ' ', content)
+        content = re.sub(r'//.*', ' ', content)
+
+        # 使用正則表達式切分 Token：字串常數 | 符號 | 識別字或數字
+        token_pattern = r'"[^"\n]*"|[{}()\[\].,;+\-*/&|<>=~]|[A-Za-z_]\w*|\d+'
+        raw_tokens = re.findall(token_pattern, content)
+
+        self.tokens = []
+        for tok in raw_tokens:
+            if tok in self.KEYWORDS:
+                self.tokens.append(('KEYWORD', tok))
+            elif tok in self.SYMBOLS:
+                self.tokens.append(('SYMBOL', tok))
+            elif tok.startswith('"'):
+                self.tokens.append(('STRING_CONST', tok[1:-1]))
+            elif tok.isdigit():
+                self.tokens.append(('INT_CONST', int(tok)))
+            else:
+                self.tokens.append(('IDENTIFIER', tok))
+
+        self.current_idx = -1
+        self.current_token = None
+
+    def has_more_tokens(self):
+        return self.current_idx + 1 < len(self.tokens)
+
+    def advance(self):
+        if self.has_more_tokens():
+            self.current_idx += 1
+            self.current_token = self.tokens[self.current_idx]
+
+    def peek(self):
+        if self.has_more_tokens():
+            return self.tokens[self.current_idx + 1]
+        return None
+
+    def token_type(self):
+        return self.current_token[0]
+
+    def value(self):
+        return self.current_token[1]
+
+
+# ==========================================
+# 2. SymbolTable: 符號表
+# ==========================================
+class SymbolTable:
+    def __init__(self):
+        self.class_scope = {}
+        self.subroutine_scope = {}
+        self.counts = {'STATIC': 0, 'FIELD': 0, 'ARG': 0, 'VAR': 0}
+
+    def start_subroutine(self):
+        self.subroutine_scope.clear()
+        self.counts['ARG'] = 0
+        self.counts['VAR'] = 0
+
+    def define(self, name, var_type, kind):
+        idx = self.counts[kind]
+        self.counts[kind] += 1
+        if kind in ('STATIC', 'FIELD'):
+            self.class_scope[name] = (var_type, kind, idx)
+        else:
+            self.subroutine_scope[name] = (var_type, kind, idx)
+
+    def var_count(self, kind):
+        return self.counts[kind]
+
+    def kind_of(self, name):
+        if name in self.subroutine_scope:
+            return self.subroutine_scope[name][1]
+        if name in self.class_scope:
+            return self.class_scope[name][1]
+        return None
+
+    def type_of(self, name):
+        if name in self.subroutine_scope:
+            return self.subroutine_scope[name][0]
+        if name in self.class_scope:
+            return self.class_scope[name][0]
+        return None
+
+    def index_of(self, name):
+        if name in self.subroutine_scope:
+            return self.subroutine_scope[name][2]
+        if name in self.class_scope:
+            return self.class_scope[name][2]
+        return None
+
+
+# ==========================================
+# 3. VMWriter: VM 碼產生器
+# ==========================================
+class VMWriter:
+    KIND_TO_SEG = {
+        'CONST': 'constant',
+        'ARG': 'argument',
+        'VAR': 'local',
+        'STATIC': 'static',
+        'FIELD': 'this',
+        'THAT': 'that',
+        'POINTER': 'pointer',
+        'TEMP': 'temp'
+    }
+
+    def __init__(self, output_file):
+        self.out = open(output_file, 'w', encoding='utf-8')
+
+    def write_push(self, segment, index):
+        seg = self.KIND_TO_SEG.get(segment, segment)
+        self.out.write(f"push {seg} {index}\n")
+
+    def write_pop(self, segment, index):
+        seg = self.KIND_TO_SEG.get(segment, segment)
+        self.out.write(f"pop {seg} {index}\n")
+
+    def write_arithmetic(self, command):
+        self.out.write(f"{command}\n")
+
+    def write_label(self, label):
+        self.out.write(f"label {label}\n")
+
+    def write_goto(self, label):
+        self.out.write(f"goto {label}\n")
+
+    def write_if(self, label):
+        self.out.write(f"if-goto {label}\n")
+
+    def write_call(self, name, n_args):
+        self.out.write(f"call {name} {n_args}\n")
+
+    def write_function(self, name, n_locals):
+        self.out.write(f"function {name} {n_locals}\n")
+
+    def write_return(self):
+        self.out.write("return\n")
+
+    def close(self):
+        self.out.close()
+
+
+# ==========================================
+# 4. CompilationEngine: 語法與程式碼編譯引擎
+# ==========================================
+class CompilationEngine:
+    OP_MAP = {
+        '+': 'add',
+        '-': 'sub',
+        '&': 'and',
+        '|': 'or',
+        '<': 'lt',
+        '>': 'gt',
+        '=': 'eq'
+    }
+
+    def __init__(self, input_file, output_file):
+        self.tokenizer = JackTokenizer(input_file)
+        self.symbol_table = SymbolTable()
+        self.vm_writer = VMWriter(output_file)
+        self.class_name = ""
+        self.label_counter = 0
+
+        if self.tokenizer.has_more_tokens():
+            self.tokenizer.advance()
+            self.compile_class()
+        self.vm_writer.close()
+
+    def _next_label(self, prefix):
+        label = f"{prefix}_{self.label_counter}"
+        self.label_counter += 1
+        return label
+
+    def _eat(self, expected=None):
+        val = self.tokenizer.value()
+        if expected is not None and val != expected:
+            raise SyntaxError(f"Expected '{expected}', got '{val}'")
+        self.tokenizer.advance()
+        return val
+
+    def compile_class(self):
+        # 'class' className '{' classVarDec* subroutineDec* '}'
+        self._eat('class')
+        self.class_name = self._eat()
+        self._eat('{')
+
+        while self.tokenizer.value() in ('static', 'field'):
+            self.compile_class_var_dec()
+
+        while self.tokenizer.value() in ('constructor', 'function', 'method'):
+            self.compile_subroutine()
+
+        self._eat('}')
+
+    def compile_class_var_dec(self):
+        # ('static' | 'field') type varName (',' varName)* ';'
+        kind = self._eat().upper()
+        var_type = self._eat()
+        name = self._eat()
+        self.symbol_table.define(name, var_type, kind)
+
+        while self.tokenizer.value() == ',':
+            self._eat(',')
+            name = self._eat()
+            self.symbol_table.define(name, var_type, kind)
+
+        self._eat(';')
+
+    def compile_subroutine(self):
+        # ('constructor' | 'function' | 'method') ('void' | type) subroutineName '(' parameterList ')' subroutineBody
+        self.symbol_table.start_subroutine()
+        sub_type = self._eat()  # constructor, function, method
+        self._eat()             # return type
+        sub_name = self._eat()
+
+        if sub_type == 'method':
+            # method 的第 0 個隱藏參數固定為 this
+            self.symbol_table.define('this', self.class_name, 'ARG')
+
+        self._eat('(')
+        self.compile_parameter_list()
+        self._eat(')')
+
+        # subroutineBody: '{' varDec* statements '}'
+        self._eat('{')
+        while self.tokenizer.value() == 'var':
+            self.compile_var_dec()
+
+        n_locals = self.symbol_table.var_count('VAR')
+        self.vm_writer.write_function(f"{self.class_name}.{sub_name}", n_locals)
+
+        if sub_type == 'constructor':
+            # 配置物件所需記憶體大小並設定 pointer 0 (THIS)
+            n_fields = self.symbol_table.var_count('FIELD')
+            self.vm_writer.write_push('CONST', n_fields)
+            self.vm_writer.write_call('Memory.alloc', 1)
+            self.vm_writer.write_pop('POINTER', 0)
+        elif sub_type == 'method':
+            # 將 argument 0 (物件位址) 設定給 pointer 0 (THIS)
+            self.vm_writer.write_push('ARG', 0)
+            self.vm_writer.write_pop('POINTER', 0)
+
+        self.compile_statements()
+        self._eat('}')
+
+    def compile_parameter_list(self):
+        # ((type varName) (',' type varName)*)?
+        if self.tokenizer.value() != ')':
+            var_type = self._eat()
+            name = self._eat()
+            self.symbol_table.define(name, var_type, 'ARG')
+            while self.tokenizer.value() == ',':
+                self._eat(',')
+                var_type = self._eat()
+                name = self._eat()
+                self.symbol_table.define(name, var_type, 'ARG')
+
+    def compile_var_dec(self):
+        # 'var' type varName (',' varName)* ';'
+        self._eat('var')
+        var_type = self._eat()
+        name = self._eat()
+        self.symbol_table.define(name, var_type, 'VAR')
+
+        while self.tokenizer.value() == ',':
+            self._eat(',')
+            name = self._eat()
+            self.symbol_table.define(name, var_type, 'VAR')
+
+        self._eat(';')
+
+    def compile_statements(self):
+        while self.tokenizer.value() in ('let', 'if', 'while', 'do', 'return'):
+            stmt = self.tokenizer.value()
+            if stmt == 'let':
+                self.compile_let()
+            elif stmt == 'if':
+                self.compile_if()
+            elif stmt == 'while':
+                self.compile_while()
+            elif stmt == 'do':
+                self.compile_do()
+            elif stmt == 'return':
+                self.compile_return()
+
+    def compile_let(self):
+        # 'let' varName ('[' expression ']')? '=' expression ';'
+        self._eat('let')
+        var_name = self._eat()
+        kind = self.symbol_table.kind_of(var_name)
+        idx = self.symbol_table.index_of(var_name)
+
+        is_array = False
+        if self.tokenizer.value() == '[':
+            is_array = True
+            self._eat('[')
+            self.compile_expression()  # 計算索引值
+            self._eat(']')
+            self.vm_writer.write_push(kind, idx)
+            self.vm_writer.write_arithmetic('add')  # 基底位址 + 偏移量
+
+        self._eat('=')
+        self.compile_expression()
+        self._eat(';')
+
+        if is_array:
+            # 避免右側表達式覆蓋 pointer 1 (THAT)，先暫存計算結果到 temp 0
+            self.vm_writer.write_pop('TEMP', 0)
+            self.vm_writer.write_pop('POINTER', 1)
+            self.vm_writer.write_push('TEMP', 0)
+            self.vm_writer.write_pop('THAT', 0)
+        else:
+            self.vm_writer.write_pop(kind, idx)
+
+    def compile_if(self):
+        # 'if' '(' expression ')' '{' statements '}' ('else' '{' statements '}')?
+        label_else = self._next_label("IF_FALSE")
+        label_end = self._next_label("IF_END")
+
+        self._eat('if')
+        self._eat('(')
+        self.compile_expression()
+        self._eat(')')
+
+        self.vm_writer.write_arithmetic('not')
+        self.vm_writer.write_if(label_else)
+
+        self._eat('{')
+        self.compile_statements()
+        self._eat('}')
+
+        if self.tokenizer.value() == 'else':
+            self.vm_writer.write_goto(label_end)
+            self.vm_writer.write_label(label_else)
+            self._eat('else')
+            self._eat('{')
+            self.compile_statements()
+            self._eat('}')
+            self.vm_writer.write_label(label_end)
+        else:
+            self.vm_writer.write_label(label_else)
+
+    def compile_while(self):
+        # 'while' '(' expression ')' '{' statements '}'
+        label_exp = self._next_label("WHILE_EXP")
+        label_end = self._next_label("WHILE_END")
+
+        self.vm_writer.write_label(label_exp)
+        self._eat('while')
+        self._eat('(')
+        self.compile_expression()
+        self._eat(')')
+
+        self.vm_writer.write_arithmetic('not')
+        self.vm_writer.write_if(label_end)
+
+        self._eat('{')
+        self.compile_statements()
+        self._eat('}')
+
+        self.vm_writer.write_goto(label_exp)
+        self.vm_writer.write_label(label_end)
+
+    def compile_do(self):
+        # 'do' subroutineCall ';'
+        self._eat('do')
+        self._compile_subroutine_call()
+        self._eat(';')
+        # 丟棄 void 函式回傳的 0
+        self.vm_writer.write_pop('TEMP', 0)
+
+    def compile_return(self):
+        # 'return' expression? ';'
+        self._eat('return')
+        if self.tokenizer.value() != ';':
+            self.compile_expression()
+        else:
+            self.vm_writer.write_push('CONST', 0)
+        self._eat(';')
+        self.vm_writer.write_return()
+
+    def compile_expression(self):
+        # term (op term)*
+        self.compile_term()
+        while self.tokenizer.value() in ('+', '-', '*', '/', '&', '|', '<', '>', '='):
+            op = self._eat()
+            self.compile_term()
+            if op == '*':
+                self.vm_writer.write_call('Math.multiply', 2)
+            elif op == '/':
+                self.vm_writer.write_call('Math.divide', 2)
+            else:
+                self.vm_writer.write_arithmetic(self.OP_MAP[op])
+
+    def compile_term(self):
+        t_type = self.tokenizer.token_type()
+        val = self.tokenizer.value()
+
+        if t_type == 'INT_CONST':
+            self.vm_writer.write_push('CONST', self._eat())
+
+        elif t_type == 'STRING_CONST':
+            s = self._eat()
+            self.vm_writer.write_push('CONST', len(s))
+            self.vm_writer.write_call('String.new', 1)
+            for ch in s:
+                self.vm_writer.write_push('CONST', ord(ch))
+                self.vm_writer.write_call('String.appendChar', 2)
+
+        elif val in ('true', 'false', 'null', 'this'):
+            kw = self._eat()
+            if kw == 'true':
+                self.vm_writer.write_push('CONST', 0)
+                self.vm_writer.write_arithmetic('not')
+            elif kw in ('false', 'null'):
+                self.vm_writer.write_push('CONST', 0)
+            elif kw == 'this':
+                self.vm_writer.write_push('POINTER', 0)
+
+        elif val == '(':
+            self._eat('(')
+            self.compile_expression()
+            self._eat(')')
+
+        elif val in ('-', '~'):
+            op = self._eat()
+            self.compile_term()
+            self.vm_writer.write_arithmetic('neg' if op == '-' else 'not')
+
+        elif t_type == 'IDENTIFIER':
+            next_tok = self.tokenizer.peek()
+            next_val = next_tok[1] if next_tok else None
+
+            if next_val == '[':
+                # 陣列存取: varName[expression]
+                var_name = self._eat()
+                kind = self.symbol_table.kind_of(var_name)
+                idx = self.symbol_table.index_of(var_name)
+                self._eat('[')
+                self.compile_expression()
+                self._eat(']')
+                self.vm_writer.write_push(kind, idx)
+                self.vm_writer.write_arithmetic('add')
+                self.vm_writer.write_pop('POINTER', 1)
+                self.vm_writer.write_push('THAT', 0)
+
+            elif next_val in ('(', '.'):
+                # 副程式呼叫
+                self._compile_subroutine_call()
+
+            else:
+                # 一般變數
+                var_name = self._eat()
+                kind = self.symbol_table.kind_of(var_name)
+                idx = self.symbol_table.index_of(var_name)
+                self.vm_writer.write_push(kind, idx)
+
+    def _compile_subroutine_call(self):
+        name = self._eat()
+        n_args = 0
+
+        if self.tokenizer.value() == '.':
+            self._eat('.')
+            sub_name = self._eat()
+            kind = self.symbol_table.kind_of(name)
+            if kind is not None:
+                # 呼叫物件的 method (例如 ball.move())
+                obj_type = self.symbol_table.type_of(name)
+                idx = self.symbol_table.index_of(name)
+                self.vm_writer.write_push(kind, idx)
+                full_name = f"{obj_type}.{sub_name}"
+                n_args = 1
+            else:
+                # 呼叫類別的 function 或 constructor (例如 Output.printInt())
+                full_name = f"{name}.{sub_name}"
+        else:
+            # 呼叫當前類別內的 method (例如 move())
+            self.vm_writer.write_push('POINTER', 0)
+            full_name = f"{self.class_name}.{name}"
+            n_args = 1
+
+        self._eat('(')
+        n_args += self.compile_expression_list()
+        self._eat(')')
+        self.vm_writer.write_call(full_name, n_args)
+
+    def compile_expression_list(self):
+        count = 0
+        if self.tokenizer.value() != ')':
+            self.compile_expression()
+            count += 1
+            while self.tokenizer.value() == ',':
+                self._eat(',')
+                self.compile_expression()
+                count += 1
+        return count
+
+
+# ==========================================
+# 5. 主程式入口
+# ==========================================
+def compile_path(target_path):
+    if os.path.isdir(target_path):
+        files = [
+            os.path.join(target_path, f)
+            for f in os.listdir(target_path)
+            if f.endswith('.jack')
+        ]
+    elif target_path.endswith('.jack'):
+        files = [target_path]
+    else:
+        print("請提供 .jack 檔案或包含 .jack 檔案的資料夾路徑。")
+        return
+
+    for jack_file in files:
+        vm_file = jack_file[:-5] + '.vm'
+        CompilationEngine(jack_file, vm_file)
+        print(f"已編譯: {jack_file} -> {vm_file}")
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print("用法: python JackCompiler.py <檔案.jack 或 資料夾路徑>")
+    else:
+        compile_path(sys.argv[1])
